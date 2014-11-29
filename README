@@ -31,7 +31,7 @@ will create a device node /dev/videoX, where X is the next free number.
 
 As epoccam_linux simply extracts a video stream from the network, use
 an application such as ffmpeg to decode its output and write to the
-loopback device:
+loopback device (make sure your user/group has write permissions):
 $ epoccam_linux 0 | ffmpeg -vcodec h264 -i - -f v4l2 /dev/video0
 
 You can test the functionality with
@@ -40,4 +40,5 @@ $ mplayer tv://
 Next steps
 ----------
 Implement audio streaming
+Handle video flags (mirrored/inverted)
 Interactive control (GTK tray icon?)
