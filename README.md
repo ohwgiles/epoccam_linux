@@ -11,34 +11,23 @@ This application provides a linux compatibility wrapper.
 
 Status
 ------
-epoccam_linux has no compile-time dependencies and should build on
-all flavours of linux.
+epoccam_linux is nearly stable, and is suitable for casual use.
 
-This project may be developed further for end-user ease of use.
+epoccam_linux depends on alsa, libavcodec, libavformat, v4l and gtk.
 
 Running
 -------
 In order to emulate a webcam driver that will be recognised by even
 closed-source software such as Skype, you should install v4l2loopback.
 
+epoccam_linux will fail to launch without a v4l2loopback device node
+being present.
+
 v4l2loopback is available at https://github.com/umlaeute/v4l2loopback,
 as well as in the Ubuntu Universe Repository and in the Arch User
 Repository.
 
-Launching
-$ sudo modprobe v4l2loopback
-will create a device node /dev/videoX, where X is the next free number.
-
-As epoccam_linux simply extracts a video stream from the network, use
-an application such as ffmpeg to decode its output and write to the
-loopback device (make sure your user/group has write permissions):
-$ epoccam_linux 0 | ffmpeg -vcodec h264 -i - -f v4l2 /dev/video0
-
-You can test the functionality with
-$ mplayer tv://
-
 Next steps
 ----------
-Implement audio streaming
+Fix latency issues
 Handle video flags (mirrored/inverted)
-Interactive control (GTK tray icon?)
