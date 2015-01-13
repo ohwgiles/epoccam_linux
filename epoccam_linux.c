@@ -58,13 +58,10 @@
 
 #include <gtk/gtk.h>
 
-#ifndef INSTALL_PREFIX
-#define INSTALL_PREFIX "/usr"
+#ifndef PREFIX
+#define PREFIX "/usr"
 #endif
-
-//#define PATH_PIXMAPS INSTALL_PREFIX "/share/epoccam"
-#define PATH_PIXMAPS "./"
-
+#define PATH_PIXMAPS PREFIX "/share/epoccam"
 #define PATH_ICON_DEFAULT PATH_PIXMAPS "/icon_default.png"
 #define PATH_ICON_AVAILABLE PATH_PIXMAPS "/icon_available.png"
 #define PATH_ICON_RECORDING PATH_PIXMAPS "/icon_recording.png"
@@ -618,7 +615,7 @@ void ec_process_audio(ec_t* e) {
 	
 	if(got_frame) {
 		if(!e->snd.open && !e->snd.failed) {
-			snd_init(&e->snd, "plughw:2,0", e->aac.ctx->sample_rate, snd_format_from_libav(e->aac.ctx->sample_fmt));
+			snd_init(&e->snd, "plughw:Loopback,0", e->aac.ctx->sample_rate, snd_format_from_libav(e->aac.ctx->sample_fmt));
 			fprintf(stderr, "init'd sound. pdsize: %d\n", snd_pcm_poll_descriptors_count(e->snd.pcm));
 			//snd_pcm_poll_descriptors(snd.pcm, &pfds[PFD_ALSA], 1);
 		}
@@ -734,8 +731,10 @@ void handle_client(gpointer data, gint src, GdkInputCondition cond) {
 			break;
 		}
 	}
+	// TODO these need to be moved somewhere smarter
 	ec_process_video(e);
-	//ec_process_audio(e);
+	ec_process_audio(e);
+	ec_process_audio(e);
 }
 
 

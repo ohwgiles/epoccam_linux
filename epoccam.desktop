@@ -1,0 +1,10 @@
+[Desktop Entry]
+Encoding=UTF-8
+Version=1.0
+Name=EpocCam
+Comment=Use smartphone as a webcam
+Exec=epoccam
+Icon=epoccam
+Terminal=false
+Type=Application
+Categories=Network;
