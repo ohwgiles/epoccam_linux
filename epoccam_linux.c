@@ -478,11 +478,42 @@ typedef struct {
 } v4l2_t;
 
 void v4l2_init(v4l2_t* v) {
-	v->fd = open("/dev/video0", O_WRONLY);
-	struct v4l2_capability caps;
-	ioctl(v->fd, VIDIOC_QUERYCAP, &caps);
-	fprintf(stderr, "driver: %s\n", caps.driver);
+	// determine the device node by searching through sysfs
+	const char path_sys[] = "/sys/devices/virtual/video4linux";
+	char path_name[128];
+	char dev_name[8];
+	char* path = NULL;
+	
+	DIR* dir = opendir(path_sys);
+	if(!dir) return;
+	
+	struct dirent* dp;
 
+	while((dp = readdir(dir))) {
+		if(*dp->d_name == '.')
+			continue;
+		snprintf(path_name, 127, "%s/%s/name", path_sys, dp->d_name);
+		FILE* f = fopen(path_name, "rb");
+		if(!f)
+			continue;
+		fread(dev_name, 1, 8, f);
+		fclose(f);
+		if(strncmp(dev_name, "Loopback", 8) == 0) {
+			path = malloc(strlen(dp->d_name)+2);
+			sprintf(path, "/dev/%s", dp->d_name);
+		}
+	}
+	
+	if(path) {	
+		v->fd = open(path, O_WRONLY);
+		struct v4l2_capability caps;
+		ioctl(v->fd, VIDIOC_QUERYCAP, &caps);
+		fprintf(stderr, "v4l2 Driver: %s\n", caps.driver);
+		free(path);
+	} else {
+		fprintf(stderr, "Could not open v4l2loopback device\n");
+		exit(1);
+	}
 }
 
 void v4l2_setup(v4l2_t* v, int width, int height) {
@@ -769,6 +800,9 @@ void handle_server(gpointer data, gint src, GdkInputCondition cond) {
 	ec_join((ec_t*) data);
 }
 
+
+
+
 int ec_init(ec_t* e) {
 	memset(e, 0, sizeof(ec_t));
 	cb_new(&e->pkt_video, CIRCBUF_LEN);
@@ -909,6 +943,20 @@ int main(int argc, char** argv) {
 	gtk_init(&argc, &argv);
 	signal(SIGINT, signal_handler);
 	
+	if(system("lsmod|grep -q v4l2loopback") != 0) {
+		fprintf(stderr, "Could not find v4l2loopback in lsmod, attempt to modprobe...\n");
+		if(system("pkexec modprobe v4l2loopback")) {
+			GtkWidget* dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "Could not load v4l2loopback kernel module");
+			gtk_dialog_run (GTK_DIALOG (dialog));
+			gtk_widget_destroy (dialog);
+			return 1;
+		}
+	}
+	
+	if(system("lsmod|grep -q snd_aloop") != 0) {
+		fprintf(stderr, "Could not find snd_aloop in lsmod, continuing anyway\n");
+	}
+		
 	if(ec_init(&e))
 		return -1;
 
