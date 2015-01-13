@@ -30,5 +30,10 @@ Repository.
 
 Next steps
 ----------
+<<<<<<< HEAD:README.md
 - Fix latency issues
 - Handle video flags (mirrored/inverted)
+=======
+Fix latency issues
+Handle video flags (mirrored/inverted)
+>>>>>>> 5c5c234683da2162148048bf902dc2c3cbcf0acb:README.md
