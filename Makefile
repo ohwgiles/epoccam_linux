@@ -1,19 +1,15 @@
 CC=gcc
-CFLAGS=-Wall -Werror -std=c99
+CFLAGS=-Wall -Werror -std=c99 -g
 TARGET=epoccam
-SRCS=epoccam_linux.c
+SRC=epoccam_linux.c
+LIBS=-lavcodec -lavutil -lasound -lavformat
 
-OBJS = $(SRCS:.c=.o)
-
-.c.o:
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(TARGET): $(OBJS)
-	$(CC) -o $(TARGET) $(OBJS)
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LIBS)
 
 all: $(TARGET)
 
 .PHONY: clean
 
 clean:
-	rm *.o $(TARGET)
+	rm $(TARGET)
