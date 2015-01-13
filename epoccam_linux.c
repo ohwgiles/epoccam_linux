@@ -29,10 +29,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * 
  */
- 
-#define _POSIX_C_SOURCE 1
-#include <sys/select.h>
+#define _GNU_SOURCE
 
+#include <sys/select.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -42,6 +41,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -51,12 +51,23 @@
 #include <libavformat/avformat.h>
 #include <sys/stat.h>
 #include <stropts.h>
+//#define _POSIX_C_SOURCE 1
 
 #include <linux/videodev2.h>
 #include <alsa/asoundlib.h>
 
 #include <gtk/gtk.h>
 
+#ifndef INSTALL_PREFIX
+#define INSTALL_PREFIX "/usr"
+#endif
+
+//#define PATH_PIXMAPS INSTALL_PREFIX "/share/epoccam"
+#define PATH_PIXMAPS "./"
+
+#define PATH_ICON_DEFAULT PATH_PIXMAPS "/icon_default.png"
+#define PATH_ICON_AVAILABLE PATH_PIXMAPS "/icon_available.png"
+#define PATH_ICON_RECORDING PATH_PIXMAPS "/icon_recording.png"
 
 
 // Ctrl-C handler
@@ -274,6 +285,7 @@ typedef struct {
 	int audio_index;
 	int audio_payload_left;
 	msg_device_t device;
+	int loop_tag;
 } client_t;
 
 // -------- Video decoding routines
@@ -494,20 +506,37 @@ void v4l2_close(v4l2_t* v) {
 typedef struct {
 	server_t server;
 	client_t clients[MAX_CLIENTS];
-	int active_client;
+	int current_client;
+	int streaming;
 	circular_buffer pkt_audio;
 	circular_buffer pkt_video;
 	aac_t aac;
 	h264_t h264;
 	v4l2_t v4l;
 	snd_t snd;
+	GtkStatusIcon* icon;
 } ec_t;
 
+static void update_icon(ec_t* e) {
+	if(e->streaming)
+		gtk_status_icon_set_from_file(e->icon, PATH_ICON_RECORDING);
+	else if(e->current_client != -1)
+		gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
+	else {
+		gtk_status_icon_set_from_file(e->icon, PATH_ICON_DEFAULT);
+		for(int i=0; i<MAX_CLIENTS; ++i) {
+			if(e->clients[i].sd) {
+				gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
+				break;
+			}
+		}
+	}
+}
 
 void ec_process_video(ec_t* e) {
 	if(cb_count(&e->pkt_video) < 80960) return;
 	if(!e->h264.prepared) {// move prepared up
-		client_t* c = &e->clients[e->active_client];
+		client_t* c = &e->clients[e->current_client];
 		int w = c->device.video[c->video_index].width;
 		int h = c->device.video[c->video_index].height;
 		fprintf(stderr, "%dx%d\n", w, h);
@@ -588,10 +617,16 @@ void ec_disconnect(ec_t* e, int client_index) {
 	fprintf(stderr, "Client disconnected\n");
 	close(e->clients[client_index].sd);
 	e->clients[client_index].sd = 0;
-	// todo only if this is the active client
-	snd_close(&e->snd);
-	e->active_client = -1;
+	if(e->clients[client_index].loop_tag)
+	gtk_input_remove(e->clients[client_index].loop_tag);
+	//snd_close(&e->snd);
+	if(client_index == e->current_client) {
+		e->streaming = 0;
+		e->current_client = -1;
+	}
+	update_icon(e);
 }
+
 
 void ec_handle(ec_t* e, int client_index) {
 	client_t* client = &e->clients[client_index];
@@ -645,19 +680,6 @@ void ec_handle(ec_t* e, int client_index) {
 		}
 		//exit(2);
 e->h264.prepared = 0;
-		// Send start message. TODO: make this externally triggerable
-		msg_header_t start_header = {
-			.version = MAGIC_CONST,
-			.type = MESSAGE_START_STREAMING,
-			.size = sizeof(msg_start_t)
-		};
-		msg_start_t start_payload = {
-			.video_idx = 0,//which_video,
-			.audio_idx = 0
-		};
-		send(client->sd, &start_header, sizeof(start_header), 0);
-		send(client->sd, &start_payload, sizeof(start_payload), 0);
-		e->active_client = client_index;
 	} else if(hdr.type == MESSAGE_VIDEODATA) {
 		msg_payload_t vid;
 		n = recv(client->sd, &vid, sizeof(msg_payload_t), MSG_WAITALL);
@@ -685,6 +707,47 @@ void handle_client(gpointer data, gint src, GdkInputCondition cond) {
 	//ec_process_audio(e);
 }
 
+
+
+void ec_start(ec_t* e, int client_index) {
+	client_t* client = &e->clients[client_index];
+	msg_header_t start_header = {
+		.version = MAGIC_CONST,
+		.type = MESSAGE_START_STREAMING,
+		.size = sizeof(msg_start_t)
+	};
+	msg_start_t start_payload = {
+		.video_idx = client->video_index,//which_video,
+		.audio_idx = client->audio_index
+	};
+	send(client->sd, &start_header, sizeof(start_header), 0);
+	send(client->sd, &start_payload, sizeof(start_payload), 0);
+	e->current_client = client_index;
+	e->streaming = 1;
+	
+	//re-add in case of stopped
+	if(client->loop_tag == 0)
+	client->loop_tag = gdk_input_add(client->sd, GDK_INPUT_READ, handle_client, e);
+	update_icon(e);
+}
+
+void ec_stop(ec_t* e) {
+	// the shitty client doesn't seem to respond to a STOP_STREAMING
+	// so just ignore it instead
+	
+	//msg_header_t stop_header = {
+	//	.version = MAGIC_CONST,
+	//	.type = MESSAGE_STOP_STREAMING,
+	//	.size = 0
+	//};
+	//send(client->sd, &stop_header, sizeof(stop_header), 0);
+	
+	// PROBLEM with this is that we won't notice if the client disconnects!
+	gtk_input_remove(e->clients[e->current_client].loop_tag);
+	e->clients[e->current_client].loop_tag = 0;
+	e->streaming = 0;
+	update_icon(e);
+}
 void ec_join(ec_t* e) {
 	for(int i = 0; i < MAX_CLIENTS; ++i) {
 		if(e->clients[i].sd == 0) {
@@ -692,9 +755,12 @@ void ec_join(ec_t* e) {
 			e->clients[i].video_index = 0;
 			e->clients[i].audio_index = 0;
 			fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
-			gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
+			e->clients[i].loop_tag = gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
 			//e->pfds[PFD_CLIENTS + i].fd = e->clients[i].sd;
 			//e->pfds[PFD_CLIENTS + i].events = POLLIN;
+			if(e->current_client == -1)
+				e->current_client = i;
+			update_icon(e);
 			break;
 		}
 	}
@@ -718,7 +784,8 @@ int ec_init(ec_t* e) {
 	v4l2_init(&e->v4l);
 
 
-	e->active_client = -1;
+	e->current_client = -1;
+	e->streaming = 0;
 	
 	
 	//tag = gdk_input_add(1, GDK_INPUT_WRITE, stdout_writer, MyIcon);
@@ -743,6 +810,95 @@ void ec_cleanup(ec_t* e) {
 	close(e->server.sd);
 }
 
+// -------- UI signal handlers
+#define SETQ(o,s,v) g_object_set_qdata(G_OBJECT(o), g_quark_from_static_string(s), (gpointer)(uint64_t)(v))
+#define GETQ(o,s) (int)(uint64_t)g_object_get_qdata(G_OBJECT(o), g_quark_from_static_string(s))
+static gboolean menu_quit(GtkMenuItem* item, gpointer userdata) {
+	fprintf(stderr, "QUIT\n");
+	gtk_main_quit();
+	return TRUE;
+}
+static gboolean menu_stop(GtkMenuItem* item, gpointer userdata) {
+	ec_t* e = userdata;
+	fprintf(stderr, "stop\n");
+	ec_stop(e);
+	return TRUE;
+}
+static gboolean menu_start(GtkMenuItem* item, gpointer userdata) {
+	ec_t* e = userdata;
+	fprintf(stderr, "start\n");
+	ec_start(e, e->current_client);
+	return TRUE;
+}
+static gboolean menu_option(GtkMenuItem* item, gpointer userdata) {
+	ec_t* e = userdata;
+	e->current_client = GETQ(item, "client");
+	if(GETQ(item, "video")) {
+		e->clients[e->current_client].video_index = GETQ(item, "index");
+	} else {
+		e->clients[e->current_client].audio_index = GETQ(item, "index");
+	}
+	menu_start(item, e);
+	return TRUE;
+}
+static gboolean popup_menu(GtkStatusIcon* status_icon, guint button, guint activate_time, gpointer userdata)
+{
+	ec_t* e = userdata;
+	GtkWidget* menu = gtk_menu_new();
+	
+	for(int i=0; i < MAX_CLIENTS; ++i) {
+		client_t* c = &e->clients[i];
+		if(c->sd != 0) {
+			char* label;
+			for(int j=0; j<c->device.video_count; ++j) {
+				asprintf(&label, "client %d: %dx%d %s", i, c->device.video[j].width, c->device.video[j].height, video_type_tostring(c->device.video[j].type));
+				GtkWidget* checkitem = gtk_check_menu_item_new_with_label(label);
+				gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(checkitem), c->video_index == j);
+				gtk_widget_set_sensitive(checkitem, e->streaming == 0);
+				SETQ(checkitem, "client", i);
+				SETQ(checkitem, "video", 1);
+				SETQ(checkitem, "index", j);
+				g_signal_connect(G_OBJECT(checkitem), "activate", G_CALLBACK(menu_option), e);
+				gtk_widget_show(checkitem);
+				gtk_menu_shell_append(GTK_MENU_SHELL(menu), checkitem);
+				free(label);
+			}			
+			for(int j=0; j<c->device.audio_count; ++j) {
+				asprintf(&label, "client %d: audio %d", i, c->device.audio[j].type);
+				GtkWidget* checkitem = gtk_check_menu_item_new_with_label(label);
+				gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(checkitem), c->audio_index == j);
+				gtk_widget_set_sensitive(checkitem, e->streaming == 0);
+				SETQ(checkitem, "client", i);
+				SETQ(checkitem, "video", 0);
+				SETQ(checkitem, "index", j);
+				g_signal_connect(G_OBJECT(checkitem), "activate", G_CALLBACK(menu_option), e);
+				gtk_widget_show(checkitem);
+				gtk_menu_shell_append(GTK_MENU_SHELL(menu), checkitem);
+				free(label);
+			}
+		}
+	}
+	if(e->streaming == 1) {
+		GtkWidget* stop = gtk_menu_item_new_with_label("Stop recording");
+		g_signal_connect(G_OBJECT(stop), "activate", G_CALLBACK(menu_stop), e);
+		gtk_menu_shell_append(GTK_MENU_SHELL(menu), stop);
+		gtk_widget_show(stop);
+	} else if(e->current_client != -1) {
+		GtkWidget* start = gtk_menu_item_new_with_label("Start recording");
+		g_signal_connect(G_OBJECT(start), "activate", G_CALLBACK(menu_start), e);
+		gtk_menu_shell_append(GTK_MENU_SHELL(menu), start);
+		gtk_widget_show(start);	
+	}
+
+	GtkWidget* quit = gtk_menu_item_new_with_label("Quit");
+	g_signal_connect(G_OBJECT(quit), "activate", G_CALLBACK(menu_quit), e);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
+	gtk_widget_show(quit);
+
+	gtk_menu_popup(GTK_MENU(menu), NULL, NULL, gtk_status_icon_position_menu, status_icon, button, activate_time);
+	g_object_ref_sink(menu);
+	return TRUE;
+}
 // -------- main function, select loop
 
 int main(int argc, char** argv) {
@@ -755,8 +911,15 @@ int main(int argc, char** argv) {
 	
 	if(ec_init(&e))
 		return -1;
+
+	GtkStatusIcon* icon = gtk_status_icon_new_from_file(PATH_ICON_DEFAULT);
+    gtk_status_icon_set_visible(icon, TRUE);
+	g_signal_connect(icon, "popup-menu", G_CALLBACK(popup_menu), &e);
+	e.icon = icon;
+	update_icon(&e);
 	
 	gtk_main();
+	
 	ec_cleanup(&e);
 	return 0;
 }
