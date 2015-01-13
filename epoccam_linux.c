@@ -55,13 +55,13 @@
 #include <linux/videodev2.h>
 #include <alsa/asoundlib.h>
 
+#include <gtk/gtk.h>
 
 
 
 // Ctrl-C handler
-static volatile int quit = 0;
 void signal_handler(int __UNUSED) {
-    quit = 1;
+    gtk_main_quit();
 }
 
 // Message constants
@@ -491,13 +491,6 @@ void v4l2_close(v4l2_t* v) {
 
 #define CIRCBUF_LEN 204800
 
-enum {
-	PFD_STDOUT = 0,
-	PFD_SERVER,
-	PFD_CLIENTS,
-	PFD_N = PFD_CLIENTS + MAX_CLIENTS
-};
-
 typedef struct {
 	server_t server;
 	client_t clients[MAX_CLIENTS];
@@ -508,47 +501,8 @@ typedef struct {
 	h264_t h264;
 	v4l2_t v4l;
 	snd_t snd;
-	struct pollfd pfds[PFD_N];
 } ec_t;
 
-int ec_init(ec_t* e) {
-	memset(e, 0, sizeof(ec_t));
-	cb_new(&e->pkt_video, CIRCBUF_LEN);
-	cb_new(&e->pkt_audio, CIRCBUF_LEN);
-	
-	if(h264_init(&e->h264, h264_feed, &e->pkt_video))
-		return -1;
-	if(aac_init(&e->aac))
-		return -1;
-	if(server_init(&e->server))
-		return -1;
-	
-	v4l2_init(&e->v4l);
-
-
-	e->active_client = -1;
-	e->pfds[PFD_STDOUT].fd = 1;
-	e->pfds[PFD_STDOUT].events = 0;
-	e->pfds[PFD_SERVER].fd = e->server.sd;
-	e->pfds[PFD_SERVER].events = POLLIN;
-	//	fcntl(1, F_SETFL, fcntl(1, F_GETFL) | O_NONBLOCK);
-
-	return 0;
-}
-
-void ec_join(ec_t* e) {
-	for(int i = 0; i < MAX_CLIENTS; ++i) {
-		if(e->clients[i].sd == 0) {
-			e->clients[i].sd = accept(e->server.sd, (struct sockaddr*)&e->clients[i].addr, &e->clients[i].socklen);
-			e->clients[i].video_index = 0;
-			e->clients[i].audio_index = 0;
-			fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
-			e->pfds[PFD_CLIENTS + i].fd = e->clients[i].sd;
-			e->pfds[PFD_CLIENTS + i].events = POLLIN;
-			break;
-		}
-	}
-}
 
 void ec_process_video(ec_t* e) {
 	if(cb_count(&e->pkt_video) < 80960) return;
@@ -634,8 +588,6 @@ void ec_disconnect(ec_t* e, int client_index) {
 	fprintf(stderr, "Client disconnected\n");
 	close(e->clients[client_index].sd);
 	e->clients[client_index].sd = 0;
-	e->pfds[PFD_CLIENTS + client_index].fd = 0;
-	e->pfds[PFD_CLIENTS + client_index].events = 0;
 	// todo only if this is the active client
 	snd_close(&e->snd);
 	e->active_client = -1;
@@ -719,6 +671,65 @@ e->h264.prepared = 0;
 	}
 }
 
+
+
+void handle_client(gpointer data, gint src, GdkInputCondition cond) {
+	ec_t* e = data;
+	for(int i=0; i < MAX_CLIENTS; ++i) {
+		if(e->clients[i].sd == src) {
+			ec_handle(e, i);
+			break;
+		}
+	}
+	ec_process_video(e);
+	//ec_process_audio(e);
+}
+
+void ec_join(ec_t* e) {
+	for(int i = 0; i < MAX_CLIENTS; ++i) {
+		if(e->clients[i].sd == 0) {
+			e->clients[i].sd = accept(e->server.sd, (struct sockaddr*)&e->clients[i].addr, &e->clients[i].socklen);
+			e->clients[i].video_index = 0;
+			e->clients[i].audio_index = 0;
+			fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
+			gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
+			//e->pfds[PFD_CLIENTS + i].fd = e->clients[i].sd;
+			//e->pfds[PFD_CLIENTS + i].events = POLLIN;
+			break;
+		}
+	}
+}
+void handle_server(gpointer data, gint src, GdkInputCondition cond) {
+	ec_join((ec_t*) data);
+}
+
+int ec_init(ec_t* e) {
+	memset(e, 0, sizeof(ec_t));
+	cb_new(&e->pkt_video, CIRCBUF_LEN);
+	cb_new(&e->pkt_audio, CIRCBUF_LEN);
+	
+	if(h264_init(&e->h264, h264_feed, &e->pkt_video))
+		return -1;
+	if(aac_init(&e->aac))
+		return -1;
+	if(server_init(&e->server))
+		return -1;
+	
+	v4l2_init(&e->v4l);
+
+
+	e->active_client = -1;
+	
+	
+	//tag = gdk_input_add(1, GDK_INPUT_WRITE, stdout_writer, MyIcon);
+
+	gdk_input_add(e->server.sd, GDK_INPUT_READ, handle_server, e);
+	//e->pfds[PFD_SERVER].fd = e->server.sd;
+	//e->pfds[PFD_SERVER].events = POLLIN;
+	//	fcntl(1, F_SETFL, fcntl(1, F_GETFL) | O_NONBLOCK);
+
+	return 0;
+}
 void ec_cleanup(ec_t* e) {
 	// Cleanup
 	if(e->snd.open)
@@ -736,48 +747,16 @@ void ec_cleanup(ec_t* e) {
 
 int main(int argc, char** argv) {
 	ec_t e;
-	int audio_debug = 0;
-	int video_debug = 0;
+	//int audio_debug = 0;
+	//int video_debug = 0;
 	
+	gtk_init(&argc, &argv);
 	signal(SIGINT, signal_handler);
 	
 	if(ec_init(&e))
 		return -1;
-		
-	while(!quit) {
-		if(audio_debug && !cb_empty(&e.pkt_audio))
-			e.pfds[PFD_STDOUT].events = POLLIN;
-		
-		int r = poll(e.pfds, PFD_N, 1000);
-		if(r < 0)
-			break;
-		
-		// Handle new clients
-		if(e.pfds[PFD_SERVER].revents & POLLIN) {
-			ec_join(&e);
-		}
-		// Handle existing clients
-		for(int i = 0; i < MAX_CLIENTS; ++i) {
-			if(e.clients[i].sd &&
-				(e.pfds[PFD_CLIENTS+i].revents & POLLIN))
-			{
-				ec_handle(&e, i);
-			}
-		}
-		// Write out the output buffers
-		if(audio_debug) {
-			if(e.pfds[PFD_STDOUT].revents & POLLIN)
-				cb_write(&e.pkt_audio, 1, cb_count(&e.pkt_audio));
-		} else if(video_debug) {
-			//if(e.pfds[PFD_STDOUT].revents & POLLIN)
-				cb_write(&e.pkt_video, 1, cb_count(&e.pkt_video));
-		} else {
-			if(e.active_client > -1) {
-				ec_process_video(&e);
-				//ec_process_audio(&e);
-			}
-		}
-	}
+	
+	gtk_main();
 	ec_cleanup(&e);
 	return 0;
 }
