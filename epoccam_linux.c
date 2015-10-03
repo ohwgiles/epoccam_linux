@@ -2,17 +2,17 @@
  * epoccam_linux
  * C program to communicate with Kinoni's EpocCam mobile application
  * Copyright (c) 2014, Oliver Giles
- * 
+ *
  * Please see README for usage instructions
- * 
+ *
  * EpocCam is produced by Kinoni (http://www.kinoni.com), who generously
  * provided useful documentation and support for this project.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer. 
+ *    list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright notice,
  *    this list of conditions and the following disclaimer in the documentation
  *    and/or other materials provided with the distribution.
@@ -27,35 +27,24 @@
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * 
+ *
  */
 #define _GNU_SOURCE
 
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-//#include <sys/select.h>
-#include <poll.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/imgutils.h>
-#include <libavformat/avformat.h>
 #include <sys/stat.h>
-#include <stropts.h>
-//#define _POSIX_C_SOURCE 1
-
-#include <linux/videodev2.h>
-#include <alsa/asoundlib.h>
-
 #include <gtk/gtk.h>
 
 #ifndef PREFIX
@@ -65,7 +54,7 @@
 #define PATH_ICON_DEFAULT PATH_PIXMAPS "/icon_default.png"
 #define PATH_ICON_AVAILABLE PATH_PIXMAPS "/icon_available.png"
 #define PATH_ICON_RECORDING PATH_PIXMAPS "/icon_recording.png"
-
+#define FFMPEG "ffmpeg"
 
 // Ctrl-C handler
 void signal_handler(int __UNUSED) {
@@ -73,53 +62,53 @@ void signal_handler(int __UNUSED) {
 }
 
 // Message constants
-#define MAGIC_CONST					0xDEADC0DE
-#define MESSAGE_VIDEOINFO			0x20000
-#define MESSAGE_VIDEOHEADER			0x20001
-#define MESSAGE_VIDEODATA			0x20002
+#define MAGIC_CONST			0xDEADC0DE
+#define MESSAGE_VIDEOINFO		0x20000
+#define MESSAGE_VIDEOHEADER		0x20001
+#define MESSAGE_VIDEODATA		0x20002
 #define MESSAGE_START_STREAMING		0x20003
 #define MESSAGE_STOP_STREAMING		0x20004
-#define MESSAGE_AUDIODATA			0x20004 // yes.
-#define MESSAGE_KEEPALIVE			0x20005
-#define VIDEO_TYPE_MPEG4      0
-#define VIDEO_TYPE_H264       1
-#define VIDEO_TYPE_H264_FILE  2
-#define AUDIO_TYPE_NO_AUDIO   0
-#define AUDIO_TYPE_AAC        1
-#define AUDIO_TYPE_PCM        2
-#define AUDIO_TYPE_OPUS       4
-#define VIDEO_FLAG_UPSIDEDOWN 1
-#define VIDEO_FLAG_KEYFRAME   2
-#define VIDEO_FLAG_LITELIMIT  4
-#define VIDEO_FLAG_HEADERS    8
-#define VIDEO_FLAG_HORZ_FLIP 16
+#define MESSAGE_AUDIODATA		0x20004 // yes.
+#define MESSAGE_KEEPALIVE		0x20005
+#define VIDEO_TYPE_MPEG4                0
+#define VIDEO_TYPE_H264                 1
+#define VIDEO_TYPE_H264_FILE            2
+#define AUDIO_TYPE_NO_AUDIO             0
+#define AUDIO_TYPE_AAC                  1
+#define AUDIO_TYPE_PCM                  2
+#define AUDIO_TYPE_OPUS                 4
+#define VIDEO_FLAG_UPSIDEDOWN           1
+#define VIDEO_FLAG_KEYFRAME             2
+#define VIDEO_FLAG_LITELIMIT            4
+#define VIDEO_FLAG_HEADERS              8
+#define VIDEO_FLAG_HORZ_FLIP            16
 
 // AudioDataMsg flags
-#define AUDIO_HEADERS    1
+#define AUDIO_HEADERS                   1
 
-#define VIDEO_SIZE_COUNT 35
-#define AUDIO_FORMAT_COUNT 5
+#define VIDEO_SIZE_COUNT                35
+#define AUDIO_FORMAT_COUNT              5
 
 // Message types
 typedef struct {
-	unsigned int version;
-	unsigned int __UNUSED1;
-	unsigned int type;
-	unsigned int size;
+    unsigned int version;
+    unsigned int __UNUSED1;
+    unsigned int type;
+    unsigned int size;
 } msg_header_t;
 
 typedef struct {
-	unsigned int software_id;
-	unsigned int machine_id;
-	unsigned int __UNUSED1 : 24;
+    unsigned int software_id;
+    unsigned int machine_id;
+    unsigned int __UNUSED1 : 24;
     unsigned int audio_count : 8;
-	unsigned int video_count;
-	struct {
-		unsigned int width : 12;
-		unsigned int height : 12;
-		unsigned int type : 8;
-		float fps;
-	} video[VIDEO_SIZE_COUNT];
+    unsigned int video_count;
+    struct {
+        unsigned int width : 12;
+        unsigned int height : 12;
+        unsigned int type : 8;
+        float fps;
+    } video[VIDEO_SIZE_COUNT];
     struct {
         unsigned int type : 8;
         unsigned int __UNUSED2 : 24;
@@ -128,31 +117,42 @@ typedef struct {
 } msg_device_t;
 
 typedef struct {
-	unsigned int video_idx;
-	unsigned int audio_idx;
+    unsigned int video_idx;
+    unsigned int audio_idx;
     unsigned short __UNUSED1;
     unsigned short __UNUSED2;
 } msg_start_t;
 
 typedef struct {
-	unsigned int flags;
-	unsigned int timestamp;
-	unsigned int size;
+    unsigned int flags;
+    unsigned int timestamp;
+    unsigned int size;
 } msg_payload_t;
 
 
 // Pretty-print video format helper
 const char* video_type_tostring(int type) {
-	switch(type) {
-	case VIDEO_TYPE_MPEG4:
-		return "MPEG4";
-	case VIDEO_TYPE_H264:
-		return "H264";
-	default:
-		return "Unknown";
-	}
+    switch(type) {
+    case VIDEO_TYPE_MPEG4:
+        return "MPEG4";
+    case VIDEO_TYPE_H264:
+        return "H264";
+    default:
+        return "Unknown";
+    }
 }
-
+const char* audio_type_tostring(int type) {
+    switch(type) {
+    case AUDIO_TYPE_AAC:
+        return "AAC";
+    case AUDIO_TYPE_OPUS:
+        return "OPUS";
+    case AUDIO_TYPE_PCM:
+        return "PCM";
+    default:
+        return "Unknown";
+    }
+}
 // -------- Circular buffer
 
 typedef struct {
@@ -163,78 +163,81 @@ typedef struct {
 } circular_buffer;
 
 int cb_recv(circular_buffer *cb, int fd, int n) {
-	while(n) {
-		int z = cb->capacity - cb->iwrite;
-		z = z < n ? z : n;
-		int r = read(fd, &cb->ptr[cb->iwrite], z);
-		if(r <= 0) {
-			if(errno != EWOULDBLOCK)
-				perror("cb_recv");
-			return n;
-		}
-		n -= r;
-		int overwrite = (cb->iwrite < cb->iread && cb->iwrite + r >= cb->iread);
-		cb->iwrite = (cb->iwrite + r) % cb->capacity;
-		if(overwrite) {
-			fprintf(stderr, "Buffer overflow, packets dropped\n");
-			cb->iread = (cb->iwrite + 1) % cb->capacity;
-			exit(1);
-		}
-	}
-	return n;
+    while(n) {
+        int z = cb->capacity - cb->iwrite;
+        z = z < n ? z : n;
+        int r = read(fd, &cb->ptr[cb->iwrite], z);
+        if(r <= 0) {
+            if(errno != EWOULDBLOCK)
+                perror("cb_recv");
+            return n;
+        }
+        n -= r;
+        int overwrite = (cb->iwrite < cb->iread && cb->iwrite + r >= cb->iread);
+        cb->iwrite = (cb->iwrite + r) % cb->capacity;
+        if(overwrite) {
+            fprintf(stderr, "Buffer overflow, packets dropped\n");
+            cb->iread = (cb->iwrite + 1) % cb->capacity;
+            //exit(1);
+        }
+    }
+    return n;
 }
 
 int cb_write(circular_buffer* cb, int fd, int n) {
-	while(n) {
-		int z = cb->capacity - cb->iread;
-		z = z < n ? z : n;
-		int r = write(fd, &cb->ptr[cb->iread], z);
-		if(r <= 0) {
-			if(errno != EWOULDBLOCK)
-				perror("cb_write");
-			return n;
-		}
-		n -= r;
-		cb->iread = (cb->iread + r) % cb->capacity;
-	}
-	return n;
+    while(n) {
+        int z = cb->capacity - cb->iread;
+        z = z < n ? z : n;
+        int r = write(fd, &cb->ptr[cb->iread], z);
+        if(r <= 0) {
+            if(errno != EWOULDBLOCK)
+                perror("cb_write");
+            return n;
+        }
+        n -= r;
+        cb->iread = (cb->iread + r) % cb->capacity;
+    }
+    return n;
 }
 
 void cb_move(circular_buffer* cb, unsigned char* output, int n) {
-	while(n) {
-		int z = cb->capacity - cb->iread;
-		z = z < n ? z : n;
-		memmove(output, &cb->ptr[cb->iread], z);
-		n -= z;
-		output += z;
-		cb->iread = (cb->iread + z) % cb->capacity;
-	}
+    while(n) {
+        int z = cb->capacity - cb->iread;
+        z = z < n ? z : n;
+        memmove(output, &cb->ptr[cb->iread], z);
+        n -= z;
+        output += z;
+        cb->iread = (cb->iread + z) % cb->capacity;
+    }
 }
 
 int cb_count(circular_buffer* cb) {
-	return cb->iread > cb->iwrite ?
-		cb->capacity - cb->iread + cb->iwrite :
-		cb->iwrite - cb->iread;
+    return cb->iread > cb->iwrite ?
+                cb->capacity - cb->iread + cb->iwrite :
+                cb->iwrite - cb->iread;
 }
 
 int cb_available(circular_buffer* cb) {
-	return cb->iread > cb->iwrite ?
-		cb->iread - cb->iwrite - 1 :
-		cb->capacity - cb->iwrite + cb->iread - 1;
+    return cb->iread > cb->iwrite ?
+                cb->iread - cb->iwrite - 1 :
+                cb->capacity - cb->iwrite + cb->iread - 1;
 }
 
 int cb_full(circular_buffer *cb) {
     return (cb->iwrite + 1) % cb->capacity == cb->iread;
+}
+void cb_clear(circular_buffer* cb) {
+    cb->iread = cb->iwrite = 0;
 }
 
 int cb_empty(circular_buffer *cb) {
     return cb->iwrite == cb->iread;
 }
 
-void cb_new(circular_buffer *cb, int capacity) {
-	cb->iread = 0;
-    cb->iwrite   = 0;
-    cb->capacity  = capacity + 1;
+void cb_init(circular_buffer *cb, int capacity) {
+    cb->iread = 0;
+    cb->iwrite = 0;
+    cb->capacity = capacity + 1;
     cb->ptr = (char*) malloc(cb->capacity);
 }
 
@@ -248,727 +251,442 @@ void cb_delete(circular_buffer *cb) {
 #define MAX_CLIENTS 3
 
 typedef struct {
-	int sd;
-	struct sockaddr_in addr;
+    int sd;
+    struct sockaddr_in addr;
 } server_t;
 
 int server_init(server_t* s) {
-	memset(&s->addr, 0, sizeof(struct sockaddr_in));
-	s->addr.sin_family = AF_INET;
-	s->addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	s->addr.sin_port = htons(5055);
-	
-	s->sd = socket(AF_INET, SOCK_STREAM, 0);
-	if(s->sd < 0)
-		return perror("socket"), -1;
-		
-	if(bind(s->sd, (struct sockaddr*)&s->addr, sizeof(struct sockaddr_in)) < 0)
-		return perror("bind"), -1;
-		
-	if(listen(s->sd, MAX_CLIENTS) < 0)
-		return perror("listen"), -1;
-		
-	return 0;
+    memset(&s->addr, 0, sizeof(struct sockaddr_in));
+    s->addr.sin_family = AF_INET;
+    s->addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    s->addr.sin_port = htons(5055);
+
+    s->sd = socket(AF_INET, SOCK_STREAM, 0);
+    if(s->sd < 0)
+        return perror("socket"), -1;
+
+    if(bind(s->sd, (struct sockaddr*)&s->addr, sizeof(struct sockaddr_in)) < 0)
+        return perror("bind"), -1;
+
+    if(listen(s->sd, MAX_CLIENTS) < 0)
+        return perror("listen"), -1;
+
+    return 0;
 }
 
 // -------- Client structure
 
 typedef struct {
-	int sd;
-	struct sockaddr_in addr;
-	socklen_t socklen;
-	int video_index;
-	int video_payload_left;
-	int audio_index;
-	int audio_payload_left;
-	msg_device_t device;
-	int loop_tag;
+    int sd;
+    struct sockaddr_in addr;
+    socklen_t socklen;
+    int video_index;
+    int video_payload_left;
+    int audio_index;
+    int audio_payload_left;
+    msg_device_t device;
+    int loop_tag;
 } client_t;
 
-// -------- Video decoding routines
+// -------- Probe path to v4l loopback device
 
-#define VIDEO_INBUF_SIZE 204800
-FILE* outfile;
-typedef struct {
-	AVCodec* codec;
-	AVFormatContext* fmt;
-    AVCodecContext* ctx;
-    AVFrame* frame;
-	AVPacket pkt;
-	uint8_t* rawdata[4];
-	int bufsize;
-	int linesizes[4];
-	uint8_t stream_buffer[VIDEO_INBUF_SIZE + FF_INPUT_BUFFER_PADDING_SIZE];
-	int bytes_buffered;
-	int np;
-	int prepared;
-	uint8_t* outbuf;
-	int outbuf_size;
-} h264_t;
+char* v4l2_probe() {
+    // determine the device node by searching through sysfs
+    const char path_sys[] = "/sys/devices/virtual/video4linux";
+    char path_name[128];
+    char dev_name[8];
+    char* path = 0;
 
-int h264_init(h264_t* h264, int (*reader)(void*,uint8_t*,int), void* udata) {
-    av_register_all();
-	avcodec_register_all();
-	av_init_packet(&h264->pkt);
-	h264->pkt.data = NULL;
-	h264->pkt.size = 0;
-	
-	uint8_t* tmpbuf = (uint8_t*) malloc(4096);
-	
-	
-	
-    h264->fmt = avformat_alloc_context();
-    h264->fmt->pb = avio_alloc_context(tmpbuf, 4096, 0, udata, reader, NULL, NULL);
-    
-    h264->codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    h264->ctx = avcodec_alloc_context3(h264->codec);
-    avcodec_open2(h264->ctx, h264->codec, NULL);
+    DIR* dir = opendir(path_sys);
+    if(!dir) return 0;
 
-h264->prepared = 0;
-    h264->bytes_buffered = 0;
-  
-	h264->outbuf = 0;
-	h264->outbuf_size = 0;
-	h264->np = 0;
-	outfile = fopen("eeviddec", "wb");
-	return 0;
-}
-void h264_prepare(h264_t* h264, int width, int height) {
-	int ret = avformat_open_input(&h264->fmt, "tt", NULL, NULL);
-	if(ret != 0) {
-		fprintf(stderr, "error opening fmt (%s)\n", av_err2str(ret));
-		exit(1);
-	}
+    struct dirent* dp;
 
-	fprintf(stderr, "avformate_open_input returned %d\n", ret);
-		h264->frame = av_frame_alloc();
-
-	h264->bufsize = av_image_alloc(h264->rawdata, h264->linesizes, width, height, AV_PIX_FMT_YUV420P, 1);
-	fprintf(stderr, "buffer size: %d\n", h264->bufsize);
-	h264->prepared = 1;
-}
-
-int h264_feed(void* b, uint8_t* out, int sz) {
-	if(sz > cb_count(b))
-		sz = cb_count(b);
-	cb_move(b, out, sz);
-	return sz;
-}
-
-int h264_decode(h264_t* h264, int* got_frame) {
-	return avcodec_decode_video2(h264->ctx, h264->frame, got_frame, &h264->pkt);
-}
-int h264_nframes(h264_t* h264) {
-	int sz = av_samples_get_buffer_size(NULL, h264->ctx->channels,
-		h264->frame->nb_samples, h264->ctx->sample_fmt, 1);
-	return sz / av_get_bytes_per_sample(h264->ctx->sample_fmt);
-}
-void h264_cleanup(h264_t* h264) {
-	avcodec_close(h264->ctx);
-    av_free(h264->ctx);
-    av_free(h264->frame);
-}
-
-// -------- Audio decoding routines
-
-#define AUDIO_INBUF_SIZE 204800
-
-typedef struct {
-	AVCodec* codec;
-    AVCodecContext* ctx;
-    AVFrame* frame;
-	AVPacket pkt;
-	uint8_t pcm_buffer[AUDIO_INBUF_SIZE + FF_INPUT_BUFFER_PADDING_SIZE];
-} aac_t;
-
-int aac_init(aac_t* aac) {
-	avcodec_register_all();
-	av_init_packet(&aac->pkt);
-    aac->codec = avcodec_find_decoder(CODEC_ID_AAC);
-    aac->ctx = avcodec_alloc_context3(aac->codec);
-    if(avcodec_open2(aac->ctx, aac->codec, NULL) < 0) {
-        fprintf(stderr, "could not open codec\n");
-        return -1;
+    while((dp = readdir(dir))) {
+        if(*dp->d_name == '.')
+            continue;
+        snprintf(path_name, 127, "%s/%s/name", path_sys, dp->d_name);
+        FILE* f = fopen(path_name, "rb");
+        if(!f)
+            continue;
+        fread(dev_name, 1, 8, f);
+        fclose(f);
+        if(strncmp(dev_name, "Loopback", 8) == 0) {
+            path = malloc(strlen(dp->d_name)+2);
+            sprintf(path, "/dev/%s", dp->d_name);
+            return path;
+        }
     }
-	aac->frame = av_frame_alloc();
-	aac->pkt.data = aac->pcm_buffer;
-	aac->pkt.size = 0;
-	return 0;
-}
-int aac_decode(aac_t* aac, int* got_frame) {
-	return avcodec_decode_audio4(aac->ctx, aac->frame, got_frame, &aac->pkt);
-}
-int aac_nframes(aac_t* aac) {
-	int sz = av_samples_get_buffer_size(NULL, aac->ctx->channels,
-		aac->frame->nb_samples, aac->ctx->sample_fmt, 1);
-	return sz / av_get_bytes_per_sample(aac->ctx->sample_fmt);
-}
-void aac_cleanup(aac_t* aac) {
-	avcodec_close(aac->ctx);
-    av_free(aac->ctx);
-    av_free(aac->frame);
+    return 0;
 }
 
-// -------- Sound output routines
+// -------- Spawning child apps
 
 typedef struct {
-	int open;
-	int failed;
-	snd_pcm_t* pcm;
-} snd_t;
+    int fd;
+    pid_t pid;
+} app_t ;
 
-int snd_init(snd_t* s, const char* device, int rate, int format) {
-	int err;
-	s->open = 0;
-	s->failed = 1;
-	if((err = snd_pcm_open(&s->pcm, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0)
-		return fprintf(stderr, "cannot open audio device %s (%s)\n", device, snd_strerror(err));
-	snd_pcm_hw_params_t *hw_params = 0;
-	if((err = snd_pcm_hw_params_malloc(&hw_params)) < 0)
-		return fprintf(stderr, "cannot allocate hardware parameter structure (%s)\n", snd_strerror(err));
-	// any failure down here causes a leak of hw_params;
-	if((err = snd_pcm_hw_params_any(s->pcm, hw_params)) < 0)
-		return fprintf(stderr, "cannot initialize hardware parameter structure (%s)\n", snd_strerror(err)), err;
-	if((err = snd_pcm_hw_params_set_channels(s->pcm, hw_params, 1)) < 0)
-		return fprintf(stderr, "cannot set channel count (%s)\n", snd_strerror(err)), err;
-	if((err = snd_pcm_hw_params_set_access(s->pcm, hw_params, SND_PCM_ACCESS_RW_NONINTERLEAVED)) < 0)
-		return fprintf(stderr, "cannot set access type (%s)\n", snd_strerror(err)), err;
-	if((err = snd_pcm_hw_params_set_format(s->pcm, hw_params, format)) < 0)
-		return fprintf(stderr, "cannot set sample format (%s)\n", snd_strerror(err)), err;
-	if((err = snd_pcm_hw_params_set_rate(s->pcm, hw_params, rate, 0)) < 0)
-		return fprintf(stderr, "cannot set sample rate (%s)\n", snd_strerror(err)), err;
-	if((err = snd_pcm_hw_params(s->pcm, hw_params)) < 0)
-		return fprintf(stderr, "cannot set parameters (%s)\n", snd_strerror(err)), err;
-	snd_pcm_hw_params_free(hw_params);
-	if((err = snd_pcm_prepare (s->pcm)) < 0)
-		return fprintf(stderr, "cannot prepare audio interface for use (%s)\n", snd_strerror(err)), err;
-	s->failed = 0;
-	s->open = 1;
-	return 0;
+int app_start(app_t* a, char* const* argv) {
+    int pfd[2];
+    pipe(pfd);
+
+    a->pid = fork();
+    if(a->pid < 0) {
+        return a->pid;
+    } else if(a->pid == 0) {
+        close(pfd[1]);
+        dup2(pfd[0], STDIN_FILENO);
+        close(pfd[0]);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        execvp(argv[0], argv);
+        _exit(1);
+    }
+
+    a->fd = pfd[1];
+    return 0;
 }
 
-int snd_format_from_libav(int fmt) {
-	switch(fmt) {
-	case AV_SAMPLE_FMT_FLT:
-	case AV_SAMPLE_FMT_FLTP:
-		return SND_PCM_FORMAT_FLOAT_LE;
-	case AV_SAMPLE_FMT_S16:
-    case AV_SAMPLE_FMT_S16P:
-		return SND_PCM_FORMAT_S16;
-	case AV_SAMPLE_FMT_S32:
-    case AV_SAMPLE_FMT_S32P:
-		return SND_PCM_FORMAT_S32;
-	}
-	return -1;
-}
-
-void snd_close(snd_t* s) {
-	s->open = 0;
-	s->failed = 0;
-	snd_pcm_close(s->pcm);
-}
-
-// -------- Video output routines
-
-typedef struct {
-	int fd;
-} v4l2_t;
-
-void v4l2_init(v4l2_t* v) {
-	// determine the device node by searching through sysfs
-	const char path_sys[] = "/sys/devices/virtual/video4linux";
-	char path_name[128];
-	char dev_name[8];
-	char* path = NULL;
-	
-	DIR* dir = opendir(path_sys);
-	if(!dir) return;
-	
-	struct dirent* dp;
-
-	while((dp = readdir(dir))) {
-		if(*dp->d_name == '.')
-			continue;
-		snprintf(path_name, 127, "%s/%s/name", path_sys, dp->d_name);
-		FILE* f = fopen(path_name, "rb");
-		if(!f)
-			continue;
-		fread(dev_name, 1, 8, f);
-		fclose(f);
-		if(strncmp(dev_name, "Loopback", 8) == 0) {
-			path = malloc(strlen(dp->d_name)+2);
-			sprintf(path, "/dev/%s", dp->d_name);
-		}
-	}
-	
-	if(path) {	
-		v->fd = open(path, O_WRONLY);
-		struct v4l2_capability caps;
-		ioctl(v->fd, VIDIOC_QUERYCAP, &caps);
-		fprintf(stderr, "v4l2 Driver: %s\n", caps.driver);
-		free(path);
-	} else {
-		fprintf(stderr, "Could not open v4l2loopback device\n");
-		exit(1);
-	}
-}
-
-void v4l2_setup(v4l2_t* v, int width, int height) {
-	struct v4l2_format fmt;
-	ioctl(v->fd, VIDIOC_G_FMT, &fmt);
-	fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-	fmt.fmt.pix.width = width;
-	fmt.fmt.pix.height = height;
-	fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV420;
-	ioctl(v->fd, VIDIOC_S_FMT, &fmt);
-}
-
-void v4l2_close(v4l2_t* v) {
-	close(v->fd);
+void app_kill(app_t* a) {
+    if(a->pid) {
+    close(a->fd);
+    kill(a->pid, SIGKILL);
+    waitpid(a->pid, NULL, 0);
+    a->pid = 0;
+    }
 }
 
 // -------- Application routines
 
-#define CIRCBUF_LEN 204800
+#define CIRCBUF_LEN 10240
 
 typedef struct {
-	server_t server;
-	client_t clients[MAX_CLIENTS];
-	int current_client;
-	int streaming;
-	circular_buffer pkt_audio;
-	circular_buffer pkt_video;
-	aac_t aac;
-	h264_t h264;
-	v4l2_t v4l;
-	snd_t snd;
-	GtkStatusIcon* icon;
+    server_t server;
+    client_t clients[MAX_CLIENTS];
+    int current_client;
+    int streaming;
+    circular_buffer pkt_audio;
+    circular_buffer pkt_video;
+    app_t proc_video;
+    app_t proc_audio;
+    char* v4l_device;
+    GtkStatusIcon* icon;
 } ec_t;
 
 static void update_icon(ec_t* e) {
-	if(e->streaming)
-		gtk_status_icon_set_from_file(e->icon, PATH_ICON_RECORDING);
-	else if(e->current_client != -1)
-		gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
-	else {
-		gtk_status_icon_set_from_file(e->icon, PATH_ICON_DEFAULT);
-		for(int i=0; i<MAX_CLIENTS; ++i) {
-			if(e->clients[i].sd) {
-				gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
-				break;
-			}
-		}
-	}
-}
-
-void ec_process_video(ec_t* e) {
-	if(cb_count(&e->pkt_video) < 80960) return;
-	if(!e->h264.prepared) {// move prepared up
-		client_t* c = &e->clients[e->current_client];
-		int w = c->device.video[c->video_index].width;
-		int h = c->device.video[c->video_index].height;
-		fprintf(stderr, "%dx%d\n", w, h);
-		h264_prepare(&e->h264, w, h);
-		v4l2_setup(&e->v4l, w, h);
-	}
-	//fprintf(stderr, "processing\n");
-	int got_frame = 0;
-	        AVPacket orig_pkt = e->h264.pkt;
-
-	if(av_read_frame(e->h264.fmt, &e->h264.pkt) >= 0) {
-		if(h264_decode(&e->h264, &got_frame) < 0)
-			return;
-		
-        if (got_frame) {
-			//fprintf(stderr, "got frame\n");
-            av_image_copy(e->h264.rawdata, e->h264.linesizes,
-                          (const uint8_t **)(e->h264.frame->data), e->h264.frame->linesize,
-                          e->h264.ctx->pix_fmt, e->h264.ctx->width, e->h264.ctx->height);
-            write(e->v4l.fd, e->h264.rawdata[0], e->h264.bufsize);
-            //fprintf(stderr, "writing %d bytes to file\n", e->h264.bufsize);
-        };
-        e->h264.pkt.size = 0;
-        av_free_packet(&orig_pkt);
+    if(e->streaming)
+        gtk_status_icon_set_from_file(e->icon, PATH_ICON_RECORDING);
+    else if(e->current_client != -1)
+        gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
+    else {
+        gtk_status_icon_set_from_file(e->icon, PATH_ICON_DEFAULT);
+        for(int i=0; i<MAX_CLIENTS; ++i) {
+            if(e->clients[i].sd) {
+                gtk_status_icon_set_from_file(e->icon, PATH_ICON_AVAILABLE);
+                break;
+            }
+        }
     }
 }
 
-void ec_process_audio(ec_t* e) {
-	int z = cb_count(&e->pkt_audio);
-	if(!z) return;
-	if(z + (e->aac.pkt.data - e->aac.pcm_buffer) > AUDIO_INBUF_SIZE)
-		z = AUDIO_INBUF_SIZE - (e->aac.pkt.data - e->aac.pcm_buffer);
-	int buffer_offset = e->aac.pkt.data - e->aac.pcm_buffer;
-
-	//fprintf(stderr, "moving %d bytes of available %d to buffer at offest %d\n", z, cb_count(&e.pkt_audio), buffer_offset);
-	
-	cb_move(&e->pkt_audio, e->aac.pkt.data, z);
-	e->aac.pkt.size += z;
-	//fprintf(stderr, "first byte: %x\n", av->pkt.data[0]);
-	
-	
-	int got_frame = 0;
-	int len = aac_decode(&e->aac, &got_frame);
-	if(len < 0) {
-		fprintf(stderr, "decode error\n");
-		return;
-	}
-	
-	if(got_frame) {
-		if(!e->snd.open && !e->snd.failed) {
-			snd_init(&e->snd, "plughw:Loopback,0", e->aac.ctx->sample_rate, snd_format_from_libav(e->aac.ctx->sample_fmt));
-			fprintf(stderr, "init'd sound. pdsize: %d\n", snd_pcm_poll_descriptors_count(e->snd.pcm));
-			//snd_pcm_poll_descriptors(snd.pcm, &pfds[PFD_ALSA], 1);
-		}
-		
-		
-		if(!e->snd.failed) {
-			int err;
-			int j = aac_nframes(&e->aac);
-			void* bufs[2] = { e->aac.frame->data[0], NULL };
-			//fprintf(stderr, "write to snd\n");
-			if((err = snd_pcm_writen(e->snd.pcm, bufs, j)) != j) {
-				 fprintf(stderr, "write to audio interface failed (%s)\n", snd_strerror(err));
-				 snd_pcm_recover(e->snd.pcm, err, 0);
-			}
-		}
-	}
-	e->aac.pkt.size -= len;
-	e->aac.pkt.data += len;
-	if(buffer_offset > 1024) {
-		//fprintf(stderr, "tidying buffer\n");
-		memmove(e->aac.pcm_buffer, e->aac.pkt.data, e->aac.pkt.size);
-		e->aac.pkt.data = e->aac.pcm_buffer;
-	}
-}
-
 void ec_disconnect(ec_t* e, int client_index) {
-	fprintf(stderr, "Client disconnected\n");
-	close(e->clients[client_index].sd);
-	e->clients[client_index].sd = 0;
-	if(e->clients[client_index].loop_tag)
-	gtk_input_remove(e->clients[client_index].loop_tag);
-	//snd_close(&e->snd);
-	if(client_index == e->current_client) {
-		e->streaming = 0;
-		e->current_client = -1;
-	}
-	update_icon(e);
+    // stop streaming doesn't work so well. Even after sending the below
+    // message, the client continues to send streaming packets. If we don't
+    // handle them, we lose synchronisation with the message stream. Instead,
+    // it's easier just to kick the client out.
+
+//    msg_header_t stop_header = {
+//        .version = MAGIC_CONST,
+//        .type = MESSAGE_STOP_STREAMING,
+//        .size = 0
+//    };
+//    send(e->clients[e->current_client].sd, &stop_header, sizeof(stop_header), 0);
+//    gdk_input_remove(e->clients[e->current_client].loop_tag);
+//    e->clients[e->current_client].loop_tag = 0;
+
+    fprintf(stderr, "Client disconnected\n");
+    if(client_index == e->current_client) {
+        app_kill(&e->proc_video);
+        app_kill(&e->proc_audio);
+
+        e->streaming = 0;
+        e->current_client = -1;
+    }
+
+    close(e->clients[client_index].sd);
+    e->clients[client_index].sd = 0;
+    if(e->clients[client_index].loop_tag)
+        gtk_input_remove(e->clients[client_index].loop_tag);
+
+    update_icon(e);
 }
 
 
 void ec_handle(ec_t* e, int client_index) {
-	client_t* client = &e->clients[client_index];
-	circular_buffer* video = &e->pkt_video;
-	circular_buffer* audio = &e->pkt_audio;
-	int which_video = 0;
-	// If there is still pending video or audio payload, deal with that
-	if(client->video_payload_left) {
-		client->video_payload_left = cb_recv(video, client->sd, client->video_payload_left);
-		return;
-	}
-	if(client->audio_payload_left) {
-		if(client->audio_payload_left == 2) {
-			fprintf(stderr, "consuming odd bytes\n");
-		char _[2];
-		read(client->sd, _, 2);
-		client->audio_payload_left -= 2;
-		}
-		client->audio_payload_left = cb_recv(audio, client->sd, client->audio_payload_left);
-		return;
-	}
+    client_t* client = &e->clients[client_index];
+    circular_buffer* video = &e->pkt_video;
+    circular_buffer* audio = &e->pkt_audio;
+    int which_video = 0;
+    // If there is still pending video or audio payload, deal with that
+    if(client->video_payload_left) {
+        client->video_payload_left = cb_recv(video, client->sd, client->video_payload_left);
+        // really here we should start listening for writable notifications on
+        // the output pipe and do the write there, but practically the pipe
+        // throughput will always be way higher than the network stream, so no
+        // worries about blocking our network reads
+        cb_write(&e->pkt_video, e->proc_video.fd, cb_count(video));
+        return;
+    }
+    if(client->audio_payload_left) {
+        if(client->audio_payload_left == 2) {
+            fprintf(stderr, "consuming odd bytes\n");
+            char _[2];
+            read(client->sd, _, 2);
+            client->audio_payload_left -= 2;
+        }
+        client->audio_payload_left = cb_recv(audio, client->sd, client->audio_payload_left);
+        cb_write(&e->pkt_audio, e->proc_audio.fd, cb_count(audio));
+        return;
+    }
 
-	// Interpret a new message
-	msg_header_t hdr;
-	int n = recv(client->sd, &hdr, sizeof(hdr), MSG_WAITALL);
-	if(n == 0)
-		return ec_disconnect(e, client_index);
-	if(n <= 0)
-		return perror("recv1");
-	
-	if(hdr.type == MESSAGE_KEEPALIVE && hdr.size) {
-		msg_device_t* device = &client->device;
-		n = recv(client->sd, device, sizeof(msg_device_t), MSG_WAITALL);
-		if(n != sizeof(msg_device_t))
-			return perror("recv2");
-			
-		fprintf(stderr, "Received %d video sizes\n", device->video_count);
-		for(int j = 0; j < device->video_count; ++j) {
-			fprintf(stderr, "Offered video size: %dx%d %s at %ffps\n", 
-				device->video[j].width, device->video[j].height,
-				video_type_tostring(device->video[j].type),
-				device->video[j].fps);
-		}
-		if(which_video >= device->video_count)
-			which_video = device->video_count - 1;
+    // Interpret a new message
+    msg_header_t hdr;
+    int n = recv(client->sd, &hdr, sizeof(hdr), MSG_WAITALL);
+    if(n == 0)
+        return ec_disconnect(e, client_index);
+    if(n <= 0)
+        return perror("recv1");
 
-		fprintf(stderr, "Selection option %d\n", which_video);
-		fprintf(stderr, "Received %d audio options\n", device->audio_count);
-		for(int j = 0; j < device->audio_count; ++j) {
-			fprintf(stderr, "Offered audio type: %d\n", device->audio[j].type);
-		}
-		//exit(2);
-e->h264.prepared = 0;
-	} else if(hdr.type == MESSAGE_VIDEODATA) {
-		msg_payload_t vid;
-		n = recv(client->sd, &vid, sizeof(msg_payload_t), MSG_WAITALL);
-		client->video_payload_left = vid.size;
-	} else if(hdr.type == MESSAGE_AUDIODATA) {
-		msg_payload_t snd;
-		n = recv(client->sd, &snd, sizeof(msg_payload_t), MSG_WAITALL);
-		client->audio_payload_left = snd.size;		
-	} else if(hdr.type != MESSAGE_KEEPALIVE) {
-		fprintf(stderr, "unknown message type %x\n", hdr.type);
-	}
+    if(hdr.type == MESSAGE_KEEPALIVE && hdr.size) {
+        msg_device_t* device = &client->device;
+        n = recv(client->sd, device, sizeof(msg_device_t), MSG_WAITALL);
+        if(n != sizeof(msg_device_t))
+            return perror("recv2");
+
+        fprintf(stderr, "Received %d video sizes\n", device->video_count);
+        for(int j = 0; j < device->video_count; ++j) {
+            fprintf(stderr, "Offered video size: %dx%d %s at %ffps\n",
+                    device->video[j].width, device->video[j].height,
+                    video_type_tostring(device->video[j].type),
+                    device->video[j].fps);
+        }
+        if(which_video >= device->video_count)
+            which_video = device->video_count - 1;
+
+        fprintf(stderr, "Selection option %d\n", which_video);
+        fprintf(stderr, "Received %d audio options\n", device->audio_count);
+        for(int j = 0; j < device->audio_count; ++j) {
+            fprintf(stderr, "Offered audio type: %d\n", device->audio[j].type);
+        }
+        fprintf(stderr, "Use the tray icon to start streaming\n");
+
+    } else if(hdr.type == MESSAGE_VIDEODATA) {
+        msg_payload_t vid;
+        n = recv(client->sd, &vid, sizeof(msg_payload_t), MSG_WAITALL);
+        client->video_payload_left = vid.size;
+    } else if(hdr.type == MESSAGE_AUDIODATA) {
+        msg_payload_t snd;
+        n = recv(client->sd, &snd, sizeof(msg_payload_t), MSG_WAITALL);
+        client->audio_payload_left = snd.size;
+    } else if(hdr.type != MESSAGE_KEEPALIVE) {
+        fprintf(stderr, "unknown message type %x\n", hdr.type);
+    }
 }
-
-
 
 void handle_client(gpointer data, gint src, GdkInputCondition cond) {
-	ec_t* e = data;
-	for(int i=0; i < MAX_CLIENTS; ++i) {
-		if(e->clients[i].sd == src) {
-			ec_handle(e, i);
-			break;
-		}
-	}
-	// TODO these need to be moved somewhere smarter
-	ec_process_video(e);
-	ec_process_audio(e);
-	ec_process_audio(e);
+    ec_t* e = data;
+    for(int i=0; i < MAX_CLIENTS; ++i) {
+        if(e->clients[i].sd == src) {
+            ec_handle(e, i);
+            break;
+        }
+    }
 }
-
-
 
 void ec_start(ec_t* e, int client_index) {
-	client_t* client = &e->clients[client_index];
-	msg_header_t start_header = {
-		.version = MAGIC_CONST,
-		.type = MESSAGE_START_STREAMING,
-		.size = sizeof(msg_start_t)
-	};
-	msg_start_t start_payload = {
-		.video_idx = client->video_index,//which_video,
-		.audio_idx = client->audio_index
-	};
-	send(client->sd, &start_header, sizeof(start_header), 0);
-	send(client->sd, &start_payload, sizeof(start_payload), 0);
-	e->current_client = client_index;
-	e->streaming = 1;
-	
-	//re-add in case of stopped
-	if(client->loop_tag == 0)
-	client->loop_tag = gdk_input_add(client->sd, GDK_INPUT_READ, handle_client, e);
-	update_icon(e);
+    client_t* client = &e->clients[client_index];
+    msg_header_t start_header = {
+        .version = MAGIC_CONST,
+        .type = MESSAGE_START_STREAMING,
+        .size = sizeof(msg_start_t)
+    };
+    msg_start_t start_payload = {
+        .video_idx = client->video_index,//which_video,
+        .audio_idx = client->audio_index
+    };
+    send(client->sd, &start_header, sizeof(start_header), 0);
+    send(client->sd, &start_payload, sizeof(start_payload), 0);
+    e->current_client = client_index;
+    e->streaming = 1;
+
+    // TODO: pass correct codec types depending on available stream
+    app_start(&e->proc_video, (char*[]){FFMPEG, "-an", "-vcodec", "h264", "-i", "-", "-f", "v4l2", e->v4l_device, NULL});
+    if(client->audio_index >= 0)
+        app_start(&e->proc_audio, (char*[]){FFMPEG, "-vn", "-acodec", "aac", "-i", "-", "-f", "alsa", "plughw:Loopback,1", NULL});
+
+    update_icon(e);
 }
 
-void ec_stop(ec_t* e) {
-	// the shitty client doesn't seem to respond to a STOP_STREAMING
-	// so just ignore it instead
-	
-	//msg_header_t stop_header = {
-	//	.version = MAGIC_CONST,
-	//	.type = MESSAGE_STOP_STREAMING,
-	//	.size = 0
-	//};
-	//send(client->sd, &stop_header, sizeof(stop_header), 0);
-	
-	// PROBLEM with this is that we won't notice if the client disconnects!
-	gtk_input_remove(e->clients[e->current_client].loop_tag);
-	e->clients[e->current_client].loop_tag = 0;
-	e->streaming = 0;
-	update_icon(e);
-}
 void ec_join(ec_t* e) {
-	for(int i = 0; i < MAX_CLIENTS; ++i) {
-		if(e->clients[i].sd == 0) {
-			e->clients[i].sd = accept(e->server.sd, (struct sockaddr*)&e->clients[i].addr, &e->clients[i].socklen);
-			e->clients[i].video_index = 0;
-			e->clients[i].audio_index = 0;
-			fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
-			e->clients[i].loop_tag = gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
-			//e->pfds[PFD_CLIENTS + i].fd = e->clients[i].sd;
-			//e->pfds[PFD_CLIENTS + i].events = POLLIN;
-			if(e->current_client == -1)
-				e->current_client = i;
-			update_icon(e);
-			break;
-		}
-	}
+    for(int i = 0; i < MAX_CLIENTS; ++i) {
+        if(e->clients[i].sd == 0) {
+            e->clients[i].sd = accept(e->server.sd, (struct sockaddr*)&e->clients[i].addr, &e->clients[i].socklen);
+            e->clients[i].video_index = -1;
+            e->clients[i].audio_index = -1;
+            fcntl(e->clients[i].sd, F_SETFL, fcntl(e->clients[i].sd, F_GETFL) | O_NONBLOCK);
+            e->clients[i].loop_tag = gdk_input_add(e->clients[i].sd, GDK_INPUT_READ, handle_client, e);
+            if(e->current_client == -1)
+                e->current_client = i;
+            update_icon(e);
+            break;
+        }
+    }
 }
 void handle_server(gpointer data, gint src, GdkInputCondition cond) {
-	ec_join((ec_t*) data);
+    ec_join((ec_t*) data);
 }
-
 
 
 
 int ec_init(ec_t* e) {
-	memset(e, 0, sizeof(ec_t));
-	cb_new(&e->pkt_video, CIRCBUF_LEN);
-	cb_new(&e->pkt_audio, CIRCBUF_LEN);
-	
-	if(h264_init(&e->h264, h264_feed, &e->pkt_video))
-		return -1;
-	if(aac_init(&e->aac))
-		return -1;
-	if(server_init(&e->server))
-		return -1;
-	
-	v4l2_init(&e->v4l);
+    memset(e, 0, sizeof(ec_t));
+    cb_init(&e->pkt_video, CIRCBUF_LEN);
+    cb_init(&e->pkt_audio, CIRCBUF_LEN);
 
+    if(server_init(&e->server))
+        return -1;
 
-	e->current_client = -1;
-	e->streaming = 0;
-	
-	
-	//tag = gdk_input_add(1, GDK_INPUT_WRITE, stdout_writer, MyIcon);
+    e->v4l_device = v4l2_probe();
 
-	gdk_input_add(e->server.sd, GDK_INPUT_READ, handle_server, e);
-	//e->pfds[PFD_SERVER].fd = e->server.sd;
-	//e->pfds[PFD_SERVER].events = POLLIN;
-	//	fcntl(1, F_SETFL, fcntl(1, F_GETFL) | O_NONBLOCK);
+    e->current_client = -1;
+    e->streaming = 0;
 
-	return 0;
+    gdk_input_add(e->server.sd, GDK_INPUT_READ, handle_server, e);
+    return 0;
 }
+
 void ec_cleanup(ec_t* e) {
-	// Cleanup
-	if(e->snd.open)
-		snd_close(&e->snd);
-	aac_cleanup(&e->aac);
-	for(int i = 0; i < MAX_CLIENTS; ++i) {
-		if(e->clients[i].sd) {
-			ec_disconnect(e, i);
-		}
-	}
-	close(e->server.sd);
+    for(int i = 0; i < MAX_CLIENTS; ++i) {
+        if(e->clients[i].sd) {
+            ec_disconnect(e, i);
+        }
+    }
+    close(e->server.sd);
+    app_kill(&e->proc_video);
+    app_kill(&e->proc_audio);
 }
 
 // -------- UI signal handlers
+
 #define SETQ(o,s,v) g_object_set_qdata(G_OBJECT(o), g_quark_from_static_string(s), (gpointer)(uint64_t)(v))
 #define GETQ(o,s) (int)(uint64_t)g_object_get_qdata(G_OBJECT(o), g_quark_from_static_string(s))
+
 static gboolean menu_quit(GtkMenuItem* item, gpointer userdata) {
-	fprintf(stderr, "QUIT\n");
-	gtk_main_quit();
-	return TRUE;
+    fprintf(stderr, "QUIT\n");
+    gtk_main_quit();
+    return TRUE;
 }
 static gboolean menu_stop(GtkMenuItem* item, gpointer userdata) {
-	ec_t* e = userdata;
-	fprintf(stderr, "stop\n");
-	ec_stop(e);
-	return TRUE;
+    ec_t* e = userdata;
+    fprintf(stderr, "stop\n");
+    ec_disconnect(e, GETQ(item, "client"));
+    return TRUE;
 }
 static gboolean menu_start(GtkMenuItem* item, gpointer userdata) {
-	ec_t* e = userdata;
-	fprintf(stderr, "start\n");
-	ec_start(e, e->current_client);
-	return TRUE;
+    ec_t* e = userdata;
+    fprintf(stderr, "start\n");
+    ec_start(e, e->current_client);
+    return TRUE;
 }
 static gboolean menu_option(GtkMenuItem* item, gpointer userdata) {
-	ec_t* e = userdata;
-	e->current_client = GETQ(item, "client");
-	if(GETQ(item, "video")) {
-		e->clients[e->current_client].video_index = GETQ(item, "index");
-	} else {
-		e->clients[e->current_client].audio_index = GETQ(item, "index");
-	}
-	menu_start(item, e);
-	return TRUE;
+    ec_t* e = userdata;
+    e->current_client = GETQ(item, "client");
+    e->clients[e->current_client].video_index = GETQ(item, "video");
+    e->clients[e->current_client].audio_index = GETQ(item, "audio");
+    menu_start(item, e);
+    return TRUE;
 }
 static gboolean popup_menu(GtkStatusIcon* status_icon, guint button, guint activate_time, gpointer userdata)
 {
-	ec_t* e = userdata;
-	GtkWidget* menu = gtk_menu_new();
-	
-	for(int i=0; i < MAX_CLIENTS; ++i) {
-		client_t* c = &e->clients[i];
-		if(c->sd != 0) {
-			char* label;
-			for(int j=0; j<c->device.video_count; ++j) {
-				asprintf(&label, "client %d: %dx%d %s", i, c->device.video[j].width, c->device.video[j].height, video_type_tostring(c->device.video[j].type));
-				GtkWidget* checkitem = gtk_check_menu_item_new_with_label(label);
-				gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(checkitem), c->video_index == j);
-				gtk_widget_set_sensitive(checkitem, e->streaming == 0);
-				SETQ(checkitem, "client", i);
-				SETQ(checkitem, "video", 1);
-				SETQ(checkitem, "index", j);
-				g_signal_connect(G_OBJECT(checkitem), "activate", G_CALLBACK(menu_option), e);
-				gtk_widget_show(checkitem);
-				gtk_menu_shell_append(GTK_MENU_SHELL(menu), checkitem);
-				free(label);
-			}			
-			for(int j=0; j<c->device.audio_count; ++j) {
-				asprintf(&label, "client %d: audio %d", i, c->device.audio[j].type);
-				GtkWidget* checkitem = gtk_check_menu_item_new_with_label(label);
-				gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(checkitem), c->audio_index == j);
-				gtk_widget_set_sensitive(checkitem, e->streaming == 0);
-				SETQ(checkitem, "client", i);
-				SETQ(checkitem, "video", 0);
-				SETQ(checkitem, "index", j);
-				g_signal_connect(G_OBJECT(checkitem), "activate", G_CALLBACK(menu_option), e);
-				gtk_widget_show(checkitem);
-				gtk_menu_shell_append(GTK_MENU_SHELL(menu), checkitem);
-				free(label);
-			}
-		}
-	}
-	if(e->streaming == 1) {
-		GtkWidget* stop = gtk_menu_item_new_with_label("Stop recording");
-		g_signal_connect(G_OBJECT(stop), "activate", G_CALLBACK(menu_stop), e);
-		gtk_menu_shell_append(GTK_MENU_SHELL(menu), stop);
-		gtk_widget_show(stop);
-	} else if(e->current_client != -1) {
-		GtkWidget* start = gtk_menu_item_new_with_label("Start recording");
-		g_signal_connect(G_OBJECT(start), "activate", G_CALLBACK(menu_start), e);
-		gtk_menu_shell_append(GTK_MENU_SHELL(menu), start);
-		gtk_widget_show(start);	
-	}
+    ec_t* e = userdata;
+    GtkWidget* menu = gtk_menu_new();
 
-	GtkWidget* quit = gtk_menu_item_new_with_label("Quit");
-	g_signal_connect(G_OBJECT(quit), "activate", G_CALLBACK(menu_quit), e);
-	gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
-	gtk_widget_show(quit);
+    for(int i=0; i < MAX_CLIENTS; ++i) {
+        client_t* c = &e->clients[i];
+        if(c->sd != 0) {
+            char* label;
+            for(int j=0; j<c->device.video_count; ++j) {
+                for(int k=c->device.audio_count ? 0 : -1; k<c->device.audio_count; ++k) {
+                    asprintf(&label, "Client %d: %dx%d %s, %s", i, c->device.video[j].width,
+                             c->device.video[j].height,video_type_tostring(c->device.video[j].type),
+                             k == -1 ? "no audio" : audio_type_tostring(c->device.audio[k].type));
+                    GtkWidget* checkitem = gtk_check_menu_item_new_with_label(label);
+                    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(checkitem), c->video_index == j && c->audio_index == k);
+                    gtk_widget_set_sensitive(checkitem, e->streaming == 0);
+                    SETQ(checkitem, "client", i);
+                    SETQ(checkitem, "video", j);
+                    SETQ(checkitem, "audio", k);
+                    g_signal_connect(G_OBJECT(checkitem), "activate", G_CALLBACK(menu_option), e);
+                    gtk_widget_show(checkitem);
+                    gtk_menu_shell_append(GTK_MENU_SHELL(menu), checkitem);
+                    free(label);
+                }
+            }
+            asprintf(&label, "Disconnect client %d", i);
+            GtkWidget* stop = gtk_menu_item_new_with_label(label);
+            SETQ(stop, "client", i);
+            g_signal_connect(G_OBJECT(stop), "activate", G_CALLBACK(menu_stop), e);
+            gtk_menu_shell_append(GTK_MENU_SHELL(menu), stop);
+            gtk_widget_show(stop);
+            free(label);
+        }
+    }
 
-	gtk_menu_popup(GTK_MENU(menu), NULL, NULL, gtk_status_icon_position_menu, status_icon, button, activate_time);
-	g_object_ref_sink(menu);
-	return TRUE;
+    GtkWidget* quit = gtk_menu_item_new_with_label("Quit");
+    g_signal_connect(G_OBJECT(quit), "activate", G_CALLBACK(menu_quit), e);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
+    gtk_widget_show(quit);
+
+    gtk_menu_popup(GTK_MENU(menu), NULL, NULL, gtk_status_icon_position_menu, status_icon, button, activate_time);
+    g_object_ref_sink(menu);
+    return TRUE;
 }
 // -------- main function, select loop
 
 int main(int argc, char** argv) {
-	ec_t e;
-	//int audio_debug = 0;
-	//int video_debug = 0;
-	
-	gtk_init(&argc, &argv);
-	signal(SIGINT, signal_handler);
-	
-	if(system("lsmod|grep -q v4l2loopback") != 0) {
-		fprintf(stderr, "Could not find v4l2loopback in lsmod, attempt to modprobe...\n");
-		if(system("pkexec modprobe v4l2loopback")) {
-			GtkWidget* dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "Could not load v4l2loopback kernel module");
-			gtk_dialog_run (GTK_DIALOG (dialog));
-			gtk_widget_destroy (dialog);
-			return 1;
-		}
-	}
-	
-	if(system("lsmod|grep -q snd_aloop") != 0) {
-		fprintf(stderr, "Could not find snd_aloop in lsmod, continuing anyway\n");
-	}
-		
-	if(ec_init(&e))
-		return -1;
+    ec_t e = { 0 };
 
-	GtkStatusIcon* icon = gtk_status_icon_new_from_file(PATH_ICON_DEFAULT);
+    gtk_init(&argc, &argv);
+    signal(SIGINT, signal_handler);
+
+    if(system("lsmod|grep -q v4l2loopback") != 0) {
+        fprintf(stderr, "Could not find v4l2loopback in lsmod, attempt to modprobe...\n");
+        if(system("pkexec modprobe v4l2loopback")) {
+            GtkWidget* dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "Could not load v4l2loopback kernel module");
+            gtk_dialog_run (GTK_DIALOG (dialog));
+            gtk_widget_destroy (dialog);
+            return 1;
+        }
+    }
+
+    if(system("lsmod|grep -q snd_aloop") != 0) {
+        fprintf(stderr, "Could not find snd_aloop in lsmod, continuing anyway\n");
+    }
+
+    if(ec_init(&e))
+        return -1;
+
+    GtkStatusIcon* icon = gtk_status_icon_new_from_file(PATH_ICON_DEFAULT);
     gtk_status_icon_set_visible(icon, TRUE);
-	g_signal_connect(icon, "popup-menu", G_CALLBACK(popup_menu), &e);
-	e.icon = icon;
-	update_icon(&e);
-	
-	gtk_main();
-	
-	ec_cleanup(&e);
-	return 0;
+    g_signal_connect(icon, "popup-menu", G_CALLBACK(popup_menu), &e);
+    e.icon = icon;
+    update_icon(&e);
+
+    gtk_main();
+
+    ec_cleanup(&e);
+    return 0;
 }
 
 

@@ -1,9 +1,9 @@
 PREFIX=/usr
 CC=gcc
-CFLAGS=-DPREFIX=\"$(PREFIX)\" -Wall -Werror -std=c99 -g $(shell pkg-config --cflags gtk+-2.0)
+CFLAGS=-DPREFIX=\"$(PREFIX)\" -Wall -std=c99 -g $(shell pkg-config --cflags gtk+-2.0)
 TARGET=epoccam
 SRC=epoccam_linux.c
-LIBS=-lavcodec -lavutil -lasound -lavformat $(shell pkg-config --libs gtk+-2.0)
+LIBS=$(shell pkg-config --libs gtk+-2.0)
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LIBS)
