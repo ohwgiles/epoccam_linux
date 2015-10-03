@@ -2,7 +2,7 @@ epoccam_linux
 -------------
 C program to communicate with Kinoni's EpocCam mobile application
 
-Copyright (c) 2014, Oliver Giles
+Copyright (c) 2015, Oliver Giles
 
 EpocCam is produced by Kinoni (http://www.kinoni.com), who generously
 provided useful documentation and support for this project.
@@ -14,7 +14,8 @@ Status
 ------
 epoccam_linux is nearly stable, and is suitable for casual use.
 
-epoccam_linux depends on alsa, libavcodec, libavformat, v4l and gtk.
+The audio has a few seconds latency - I haven't had time to figure out
+the cause of that yet
 
 Running
 -------
